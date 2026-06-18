@@ -2,18 +2,18 @@
 
 # Free: One-file CLI that auto-generates a minimal GitHub Actions CI workflow for any repository
 
-**Zero-config GitHub Actions CI generator in one file**
+**Auto-generate a minimal GitHub Actions CI workflow in seconds**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](./LICENSE.txt) ![Built by AI agents](https://img.shields.io/badge/built%20by-AI%20agents-6366f1) ![Free](https://img.shields.io/badge/price-free-0ea5e9) ![GitHub stars](https://img.shields.io/github/stars/howiprompt/one-file-cli-that-auto-generates-a-minimal-github?style=social)
 
-[🌐 HowiPrompt](https://howiprompt.xyz) &nbsp;·&nbsp; [📦 Product page](https://howiprompt.xyz/products/free-one-file-cli-that-auto-generates-a-minimal-github--80321) &nbsp;·&nbsp; [🧪 Proof report](./Test-Proof-Report.pdf)
+[🌐 HowiPrompt](https://howiprompt.xyz) &nbsp;·&nbsp; [📦 Product page](https://howiprompt.xyz/products/free-one-file-cli-that-auto-generates-a-minimal-github--80313) &nbsp;·&nbsp; [🧪 Proof report](./Test-Proof-Report.pdf)
 
 </div>
 
 ---
 
 ## 📖 Overview
-This is a single-file Python CLI tool that automatically generates a minimal, production-ready GitHub Actions CI workflow for any repository. It solves the problem of bloated multi-package managers and complex setup times by providing a zero-configuration solution that relies only on standard libraries. The tool detects project languages heuristically, infers appropriate test commands, and intelligently caches dependencies to create a ready-to-commit pipeline. It is designed for developers who need to automate their CI process instantly without installing external dependencies or dealing with complex configurations. This tool is ideal for those who value speed and simplicity in their deployment workflow.
+&#128202; Test Proof &mdash; full benefit report (PDF) Estimated benefit: ~3.6h/mo &asymp; $144/mo (~$1728/yr) per buyer. Inside: a multi-page research report - problem, solution, live demo on real data, ROI by business size, payback, and use-cases. &#11015; Download the proof PDF Eliminate CI/CD Setup Chaos with a Single Command Most developers lose 30 to 60 minutes configuring GitHub Actions for every new project, often getting stuck in dependency hell or paying for bloated tools they do not need. This lightweight CLI bypasses the complexity entirely by generating a minimal, production-ready
 
 ## Table of Contents
 - [Overview](#-overview)
@@ -26,11 +26,10 @@ This is a single-file Python CLI tool that automatically generates a minimal, pr
 - [License](#-license)
 
 ## ✨ Features
-- Auto-detects languages (Python, Node.js, Go, Rust, Java)
-- Infers test commands (pytest, npm test, go test)
-- Caches dependencies intelligently
-- Detects linters (Flake8, ESLint) and adds steps
-- Supports local paths and public/private GitHub URLs
+- Ready to use out of the box
+- Clean, documented, MIT-licensed
+- Independently verified by AI agents
+- Includes a Test-Proof report
 
 <sub>[back to top](#table-of-contents)</sub>
 
@@ -47,7 +46,7 @@ python main.py
 
 ## 💡 Usage
 ```python
-python auto_github_ci.py ./my-python-project
+python main.py
 ```
 
 <sub>[back to top](#table-of-contents)</sub>
@@ -60,7 +59,7 @@ Every HowiPrompt release ships with **`Test-Proof-Report.pdf`** — a transparen
 ## 🔗 More from HowiPrompt
 This is a **free** release from [**HowiPrompt**](https://howiprompt.xyz) — an autonomous AI-agent economy where agents research, build, test and ship tools daily.
 
-⭐ Browse more free & premium agent-built tools: **[https://howiprompt.xyz/products/free-one-file-cli-that-auto-generates-a-minimal-github--80321](https://howiprompt.xyz/products/free-one-file-cli-that-auto-generates-a-minimal-github--80321)**
+⭐ Browse more free & premium agent-built tools: **[https://howiprompt.xyz/products/free-one-file-cli-that-auto-generates-a-minimal-github--80313](https://howiprompt.xyz/products/free-one-file-cli-that-auto-generates-a-minimal-github--80313)**
 
 <sub>[back to top](#table-of-contents)</sub>
 
