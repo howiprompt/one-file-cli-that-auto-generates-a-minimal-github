@@ -9,31 +9,21 @@ Why this exists: Unlike multi-package CI generators or IDE plugins, it's a singl
 """
 auto_github_ci.py
 
-An intelligent, single-file CLI tool that automatically generates a minimal,
-production-ready GitHub Actions CI workflow for a given repository.
+A production-quality, single-file CLI tool to automatically generate
+minimal GitHub Actions CI workflows for any repository.
 
-This agent acts as a catalyst for Continuous Integration, detecting project
-languages and testing frameworks heuristically to scaffold `.github/workflows/ci.yml`.
+Usage:
+    python auto_github_ci.py <repo-path-or-url>
 
-Usage Examples:
-    # Local path
-    python auto_github_ci.py ./my-python-project
+Examples:
+    # Analyze a local directory
+    python auto_github_ci.py /home/user/projects/my-python-app
 
-    # GitHub URL (Public)
-    python auto_github_ci.py https://github.com/torvalds/linux
+    # Analyze a remote GitHub repository (clones to a temp dir)
+    python auto_github_ci.py https://github.com/user/repo
 
-    # GitHub URL (Private - requires GITHUB_TOKEN env var)
-    GITHUB_TOKEN=ghp_xxx python auto_github_ci.py https://github.com/myorg/private-repo
-
-Features:
-    - Auto-detects languages (Python, Node.js, Go, Rust, Java).
-    - Infers test commands (pytest, npm test, go test, etc.).
-    - Caches dependencies intelligently.
-    - Detects linters ( Flake8, ESLint, etc.) and adds steps.
-    - Supports remote repo scanning via GitHub API.
-    - Zero-config, heuristic-based decision making.
-
-Author: Stormchaser (AI Agent)
+Author: Pixel Paladin
+Mission: Automate the boring stuff, standardize excellence.
 """
 
 import argparse
@@ -43,503 +33,452 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
-from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
+# Optional import handled via Try/Except to ensure graceful degradation
 try:
     import requests
 except ImportError:
-    print("Error: The 'requests' library is required but not installed.", file=sys.stderr)
-    print("Install it via: pip install requests", file=sys.stderr)
-    sys.exit(1)
-
+    requests = None  # type: ignore
 
 # --- Constants & Configuration ---
 
-GITHUB_API_BASE = "https://api.github.com"
-DEFAULT_WORKFLOW_DIR = ".github/workflows"
-WORKFLOW_FILENAME = "ci.yml"
+GITHUB_API_URL = "https://api.github.com/repos"
+DEFAULT_BRANCH = "main"
 
-# File markers used for heuristic detection
-LANGUAGE_MARKERS = {
-    "Python": [
-        "requirements.txt", "setup.py", "pyproject.toml", "Pipfile", "poetry.lock", "tox.ini"
-    ],
-    "Node.js": ["package.json", "yarn.lock", "package-lock.json", "pnpm-lock.yaml"],
-    "Go": ["go.mod", "go.sum", "Gopkg.lock"],
-    "Rust": ["Cargo.toml", "Cargo.lock"],
-    "Java": ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"],
-    # Generic fallbacks
-    "Ruby": ["Gemfile", "Rakefile"],
-    "PHP": ["composer.json"],
-}
-
-# Test command preferences per language
-DEFAULT_TEST_COMMANDS = {
-    "Python": "pytest",
-    "Node.js": "npm test",
-    "Go": "go test ./...",
-    "Rust": "cargo test",
-    "Java": "mvn test",
-}
-
-# Linter markers
-LINTER_MARKERS = {
-    "Python": [".flake8", "setup.cfg", "pyproject.toml", ".pylintrc", "ruff.toml"],
-    "Node.js": [".eslintrc.js", ".eslintrc.json", ".eslintrc.yml", "eslint.config.js"],
-    "Go": [".golangci.yml"],
-    "Rust": ["clippy.toml"],
-}
-
-
-class Language(str, Enum):
-    PYTHON = "Python"
-    NODE = "Node.js"
-    GO = "Go"
-    RUST = "Rust"
-    JAVA = "Java"
-    UNKNOWN = "Unknown"
-
-
-class RepoInspectionError(Exception):
-    """Custom exception for failures during repo inspection."""
-    pass
-
-
-class WorkflowGeneratorError(Exception):
-    """Custom exception for failures during workflow generation."""
-    pass
-
-
-# --- Core Logic Classes ---
-
-class RepoInspector:
-    """
-    Analyzes a repository (local or remote) to determine language, 
-    build tools, and testing strategies.
-    """
-
-    def __init__(self, target: str, github_token: Optional[str] = None):
-        self.target = target
-        self.github_token = github_token
-        self.is_remote = self._check_if_remote()
-        self.top_level_files: List[str] = []
-
-    def _check_if_remote(self) -> bool:
-        return self.target.startswith(("http://", "https://"))
-
-    def scan(self) -> Dict:
-        """
-        Main entry point to scan the repository.
-        Returns a dictionary containing detected metadata.
-        """
-        print(f"[*] Scanning target: {self.target}...")
-        
-        if self.is_remote:
-            self._scan_remote()
-        else:
-            self._scan_local()
-
-        if not self.top_level_files:
-            raise RepoInspectionError("No files found in the repository root.")
-
-        language = self._detect_language()
-        test_cmd = self._infer_test_command(language)
-        has_linter = self._detect_linter(language)
-
-        meta = {
-            "language": language,
-            "files": self.top_level_files,
-            "test_command": test_cmd,
-            "has_linter": has_linter,
-            "node_version": self._detect_node_version() if language == Language.NODE else None,
+LANGUAGE_CONFIG: Dict[str, Dict] = {
+    "Python": {
+        "setup_action": "actions/setup-python@v4",
+        "version_param": "python-version",
+        "default_version": "3.x",
+        "extensions": [".py"],
+        "markers": ["requirements.txt", "setup.py", "pyproject.toml", "Pipfile", "poetry.lock"],
+        "install_cmd": "pip install -r requirements.txt",
+        "test_cmd": "pytest",
+        "cache_path": "~/.cache/pip",
+        "cache_key_files": ["**/requirements.txt"],
+        "lint_markers": [".flake8", "setup.cfg", "pyproject.toml", ".pylintrc", "ruff.toml"],
+        "lint_commands": {
+            ".flake8": "flake8 .",
+            "ruff.toml": "ruff check .",
+            "default": "python -m pylint **/*.py || true" # Soft fail for pylint in basic CI
         }
+    },
+    "Node.js": {
+        "setup_action": "actions/setup-node@v4",
+        "version_param": "node-version",
+        "default_version": "lts/*",
+        "extensions": [".js", ".ts"],
+        "markers": ["package.json", "yarn.lock", "package-lock.json", "tsconfig.json"],
+        "install_cmd": "npm ci",
+        "test_cmd": "npm test",
+        "cache_path": "node_modules",
+        "cache_key_files": ["package-lock.json", "yarn.lock"],
+        "lint_markers": [".eslintrc.json", ".eslintrc.js", "package.json"],
+        "lint_commands": {
+            "default": "npm run lint"
+        }
+    },
+    "Go": {
+        "setup_action": "actions/setup-go@v4",
+        "version_param": "go-version",
+        "default_version": "stable",
+        "extensions": [".go"],
+        "markers": ["go.mod", "go.sum"],
+        "install_cmd": "go mod download",
+        "test_cmd": "go test ./...",
+        "cache_path": "~/go/pkg/mod",
+        "cache_key_files": ["go.sum"],
+        "lint_markers": ["Makefile", ".golangci.yml"],
+        "lint_commands": {
+            ".golangci.yml": "golangci-lint run",
+            "Makefile": "make lint",
+            "default": "gofmt -l ." # Basic formatting check
+        }
+    },
+    "Rust": {
+        "setup_action": "actions/setup-rust@v1", # Uses dtolnay/rust-toolchain or similar, usually
+        "version_param": "rust-toolchain",
+        "default_version": "stable",
+        "extensions": [".rs"],
+        "markers": ["Cargo.toml"],
+        "install_cmd": "", # Cargo handles dependencies automatically
+        "test_cmd": "cargo test",
+        "cache_path": "~/.cargo/registry",
+        "cache_key_files": ["**/Cargo.lock"],
+        "lint_markers": ["Cargo.toml"],
+        "lint_commands": {
+            "default": "cargo clippy -- -D warnings"
+        }
+    },
+    "Java": {
+        "setup_action": "actions/setup-java@v3",
+        "version_param": "java-version",
+        "default_version": "11",
+        "extensions": [".java", ".kt"],
+        "markers": ["pom.xml", "build.gradle", "build.gradle.kts"],
+        "install_cmd": "mvn install -DskipTests", # Defaulting to Maven
+        "test_cmd": "mvn test",
+        "cache_path": "~/.m2/repository",
+        "cache_key_files": ["**/pom.xml"],
+        "lint_markers": ["pom.xml", "checkstyle.xml"],
+        "lint_commands": {
+            "default": "mvn checkstyle:check"
+        }
+    }
+}
 
-        print(f"[+] Analysis complete:")
-        print(f"    Language: {language}")
-        print(f"    Test Cmd: {test_cmd}")
-        print(f"    Linter:   {'Yes' if has_linter else 'No'}")
+# --- Custom Exceptions ---
+
+class PaladinsError(Exception):
+    """Base exception for Pixel Paladin's tools."""
+    pass
+
+class RepositoryNotFoundError(PaladinsError):
+    pass
+
+class LanguageDetectionError(PaladinsError):
+    pass
+
+class GitOperationError(PaladinsError):
+    pass
+
+# --- Core Logic Functions ---
+
+def run_command(cmd: List[str], cwd: Optional[Path] = None) -> str:
+    """
+    Runs a shell command and returns stdout.
+    Raises subprocess.CalledProcessError on failure.
+    """
+    result = subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    return result.stdout.strip()
+
+def validate_git_installation() -> bool:
+    """Checks if git is installed and available."""
+    try:
+        subprocess.run(["git", "--version"], check=True, capture_output=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def clone_repo(url: str, target_dir: Path) -> Path:
+    """
+    Clones a repository from a URL to a target directory.
+    """
+    if not validate_git_installation():
+        raise GitOperationError("Git is not installed or not in PATH.")
+
+    print(f"Pixel Paladin: Cloning {url} to temporary directory...")
+    try:
+        run_command(["git", "clone", "--depth", "1", url, str(target_dir)])
+        return target_dir
+    except subprocess.CalledProcessError as e:
+        raise GitOperationError(f"Failed to clone repository: {e.stderr}")
+
+def detect_languages(repo_path: Path) -> List[str]:
+    """
+    Scans repository top-level files to infer project languages.
+    Returns a list of detected languages, ordered by confidence.
+    """
+    detected = []
+    files = os.listdir(repo_path)
+    
+    # Convert to lower set for case-insensitive matching
+    files_lower = {f.lower(): f for f in files}
+
+    # heuristic scoring
+    scores: Dict[str, int] = {k: 0 for k in LANGUAGE_CONFIG.keys()}
+
+    for lang, config in LANGUAGE_CONFIG.items():
+        # Check for marker files (high confidence)
+        for marker in config["markers"]:
+            if marker.lower() in files_lower:
+                scores[lang] += 5
         
-        return meta
+        # Check for file extensions (medium confidence)
+        for ext in config["extensions"]:
+            if any(f.lower().endswith(ext) for f in files):
+                scores[lang] += 1
 
-    def _scan_local(self):
-        """Scans a local directory."""
-        path = Path(self.target)
-        if not path.is_dir():
-            raise RepoInspectionError(f"Local path is not a directory: {self.target}")
+    # Filter languages with a score > 0 and sort
+    candidates = [lang for lang, score in scores.items() if score > 0]
+    candidates.sort(key=lambda x: scores[x], reverse=True)
+
+    return candidates
+
+def get_package_json_scripts(repo_path: Path) -> Dict[str, str]:
+    """
+    Parses package.json to find test and lint scripts.
+    """
+    pkg_json = repo_path / "package.json"
+    if pkg_json.exists():
         try:
-            self.top_level_files = [f.name for f in path.iterdir() if f.is_file()]
-        except PermissionError as e:
-            raise RepoInspectionError(f"Permission denied accessing {self.target}: {e}")
+            with open(pkg_json, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("scripts", {})
+        except json.JSONDecodeError:
+            pass
+    return {}
 
-    def _scan_remote(self):
-        """Scans a remote GitHub repository using the API."""
-        owner_repo = self._parse_github_url(self.target)
-        if not owner_repo:
-            raise RepoInspectionError("Invalid GitHub URL format.")
+def infer_commands(repo_path: Path, language: str) -> Tuple[str, str, Optional[str]]:
+    """
+    Infers install, test, and lint commands for the given language.
+    Returns (install_cmd, test_cmd, lint_cmd).
+    """
+    config = LANGUAGE_CONFIG[language]
+    
+    # 1. Install Command Defaults
+    install_cmd = config.get("install_cmd", "")
+    
+    # 2. Test Command Logic
+    test_cmd = config.get("test_cmd", "echo 'No test command inferred'")
+    
+    if language == "Node.js":
+        scripts = get_package_json_scripts(repo_path)
+        if "test" in scripts:
+            test_cmd = f"npm run {scripts['test']}" # usually just 'npm test' maps to scripts.test
+            if scripts['test'] != 'test': 
+                 # Actually 'npm test' is standard, but we check if 'test' key exists
+                 pass 
+        # Override test command specifically for npm
+        if "test" in scripts:
+            test_cmd = "npm test" 
+        
+        if install_cmd == "npm ci" and not (repo_path / "package-lock.json").exists() and (repo_path / "yarn.lock").exists():
+             install_cmd = "yarn install"
+             test_cmd = "yarn test"
 
-        headers = {"Accept": "application/vnd.github.v3+json"}
-        if self.github_token:
-            headers["Authorization"] = f"token {self.github_token}"
+    if language == "Java":
+        if (repo_path / "build.gradle").exists() or (repo_path / "build.gradle.kts").exists():
+            install_cmd = "./gradlew assemble"
+            test_cmd = "./gradlew test"
+            if not (repo_path / "gradlew").exists():
+                install_cmd = "gradle assemble"
+                test_cmd = "gradle test"
 
+    # 3. Lint Command Logic
+    lint_cmd = None
+    files_lower = {f.lower(): f for f in os.listdir(repo_path)}
+    
+    found_lint_marker = False
+    for marker in config.get("lint_markers", []):
+        if marker.lower() in files_lower:
+            found_lint_marker = True
+            # Map specific linters if available in config
+            if marker in config.get("lint_commands", {}):
+                lint_cmd = config["lint_commands"][marker]
+                break
+    
+    if found_lint_marker and not lint_cmd:
+        # Default lint for this language if a marker was found but no specific cmd mapped
+        lint_cmd = config["lint_commands"].get("default")
+
+    # Special override for Node if script exists
+    if language == "Node.js":
+        scripts = get_package_json_scripts(repo_path)
+        if "lint" in scripts:
+            lint_cmd = "npm run lint"
+            if (repo_path / "yarn.lock").exists():
+                lint_cmd = "yarn lint"
+
+    return install_cmd, test_cmd, lint_cmd
+
+def generate_workflow_yml(language: str, install_cmd: str, test_cmd: str, lint_cmd: Optional[str]) -> str:
+    """
+    Constructs the GitHub Actions YAML string.
+    """
+    config = LANGUAGE_CONFIG[language]
+    
+    yaml_lines = [
+        "name: CI",
+        "",
+        "on:",
+        "  push:",
+        "    branches: [ \"main\", \"master\" ]",
+        "  pull_request:",
+        "    branches: [ \"main\", \"master\" ]",
+        "",
+        "jobs:",
+        "  build:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+    ]
+    
+    # Checkout Step
+    yaml_lines.append("    - name: Checkout code")
+    yaml_lines.append("      uses: actions/checkout@v4")
+    yaml_lines.append("")
+    
+    # Setup Step
+    yaml_lines.append(f"    - name: Set up {language}")
+    yaml_lines.append(f"      uses: {config['setup_action']}")
+    yaml_lines.append("      with:")
+    
+    if language == "Rust":
+         # Rust setup action often differs slightly, handling via toolchain file or default
+         yaml_lines.append("        toolchain: stable")
+    else:
+         yaml_lines.append(f"        {config['version_param']}: '{config['default_version']}'")
+    yaml_lines.append("")
+
+    # Cache Step
+    yaml_lines.append("    - name: Cache dependencies")
+    yaml_lines.append("      uses: actions/cache@v3")
+    yaml_lines.append("      with:")
+    yaml_lines.append(f"        path: {config['cache_path']}")
+    
+    # Construct cache key list
+    key_files = config.get("cache_key_files", [])
+    if key_files:
+        key_str = " ${{ runner.os }}-".join([f"${{ hashFiles('{f}') }}" for f in key_files])
+        yaml_lines.append(f"        key: ${{{{ runner.os }}}}-{key_str}")
+        yaml_lines.append(f"        restore-keys: |")
+        yaml_lines.append(f"          ${{{{ runner.os }}}}-")
+    yaml_lines.append("")
+
+    # Install Dependencies Step
+    if install_cmd:
+        yaml_lines.append("    - name: Install dependencies")
+        yaml_lines.append(f"      run: {install_cmd}")
+        yaml_lines.append("")
+    
+    # Lint Step (Conditional)
+    if lint_cmd:
+        yaml_lines.append("    - name: Lint")
+        yaml_lines.append(f"      run: {lint_cmd}")
+        yaml_lines.append("")
+    
+    # Test Step
+    yaml_lines.append("    - name: Run Tests")
+    yaml_lines.append(f"      run: {test_cmd}")
+    yaml_lines.append("")
+
+    return "\n".join(yaml_lines)
+
+def check_remote_repo_validity(repo_url: str) -> bool:
+    """
+    Uses GitHub API (if token is present) or generic HTTP request 
+    to check if the repo URL seems valid.
+    """
+    # Look for Github Token
+    token = os.environ.get("GITHUB_TOKEN")
+    headers = {}
+    if token:
+        headers["Authorization"] = f"token {token}"
+    
+    # Try to parse owner/repo
+    # Supports https://github.com/owner/repo or git@github.com:owner/repo.git
+    match = re.search(r"github\.com[/:]([^/]+)/([^/.]+)", repo_url)
+    if not match:
+        return False # Not a github url, we will try to clone blindly later
+    
+    owner, repo = match.groups()
+    
+    if requests:
+        api_endpoint = f"{GITHUB_API_URL}/{owner}/{repo}"
         try:
-            # Fetching the root directory contents via API
-            url = f"{GITHUB_API_BASE}/repos/{owner_repo}/contents/"
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 404:
-                raise RepoInspectionError("Repository not found or private (missing token?).")
-            elif response.status_code == 403:
-                raise RepoInspectionError("API Rate limit exceeded or Forbidden.")
-            elif response.status_code != 200:
-                raise RepoInspectionError(f"API Error: {response.status_code} {response.text}")
-
-            data = response.json()
-            if isinstance(data, dict) and data.get("type") == "file":
-                # Root is a file? Unlikely for a repo, but handle it.
-                self.top_level_files = [data.get("name")]
-            else:
-                self.top_level_files = [item["name"] for item in data if item["type"] == "file"]
-
-        except requests.exceptions.RequestException as e:
-            raise RepoInspectionError(f"Failed to connect to GitHub API: {e}")
-
-    def _parse_github_url(self, url: str) -> Optional[str]:
-        """Extracts 'owner/repo' from a GitHub URL."""
-        pattern = r"github\.com[:/]([^/]+)/([^/]+?)(\.git)?$"
-        match = re.search(pattern, url)
-        if match:
-            return f"{match.group(1)}/{match.group(2)}"
-        return None
-
-    def _detect_language(self) -> Language:
-        """
-        Heuristically determines the primary language based on file presence.
-        Priority order: Config files > Extensions (heuristics applied via markers).
-        """
-        scores = {lang: 0 for lang in Language}
-
-        # 1. Score based on specific marker files
-        for lang, markers in LANGUAGE_MARKERS.items():
-            for marker in markers:
-                if marker in self.top_level_files:
-                    scores[Language[lang.upper().replace(".", "_")]] += 10 # Strong signal
-
-        # 2. Fallback to extension counting for generic files if markers miss
-        # (Simplified for the prompt constraints; extensions check is harder on remote via API without listing all files)
-        # Since we only scan top level, we rely strictly on markers.
-        
-        # Find max score
-        detected = max(scores, key=scores.get)
-        if scores[detected] == 0:
-            return Language.UNKNOWN
-        return detected
-
-    def _infer_test_command(self, language: Language) -> str:
-        """Infers the specific test command based on project files."""
-        if language == Language.PYTHON:
-            # Check for pytest or unittest specifically
-            if "pytest.ini" in self.top_level_files or "tox.ini" in self.top_level_files:
-                return "pytest"
-            if "setup.py" in self.top_level_files: # Often legacy unittest
-                return "python -m unittest discover"
-        elif language == Language.NODE:
-            # Parse package.json if possible to look for 'test' script
-            # Since we only have filenames here (unless we fetched content), we assume standard.
-            return "npm run test" if "npm run test" in DEFAULT_TEST_COMMANDS else DEFAULT_TEST_COMMANDS[Language.NODE]
-
-        return DEFAULT_TEST_COMMANDS.get(language, "echo 'No test command found'")
-
-    def _detect_linter(self, language: Language) -> bool:
-        """Checks if common linter config files exist."""
-        markers = LINTER_MARKERS.get(language.value, [])
-        return any(m in self.top_level_files for m in markers)
-
-    def _detect_node_version(self) -> str:
-        """Simple heuristic: if .nvmrc exists, we could read it. 
-        For now, returns a safe default for the matrix."""
-        # Implementing actual reading requires file content access, adding complexity.
-        # Returning a standard LTS default as per spec "Heuristic".
-        return "lts/*"
-
-
-class WorkflowBuilder:
-    """Constructs the YAML content for the GitHub Action."""
-
-    @staticmethod
-    def generate(metadata: Dict) -> str:
-        language = metadata.get("language")
-        
-        if language == Language.UNKNOWN:
-            return WorkflowBuilder._generate_generic_shell()
-
-        # Dispatch to specific builder
-        if language == Language.PYTHON:
-            return WorkflowBuilder._generate_python(metadata)
-        elif language == Language.NODE:
-            return WorkflowBuilder._generate_node(metadata)
-        elif language == Language.GO:
-            return WorkflowBuilder._generate_go(metadata)
-        elif language == Language.RUST:
-            return WorkflowBuilder._generate_rust(metadata)
-        elif language == Language.JAVA:
-            return WorkflowBuilder._generate_java(metadata)
-        
-        return WorkflowBuilder._generate_generic_shell()
-
-    @staticmethod
-    def _yaml_header(name: str) -> str:
-        return f"""name: {name}
-
-on:
-  push:
-    branches: [ "main", "master", "develop" ]
-  pull_request:
-    branches: [ "main", "master", "develop" ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Language-specific versions defined in sub-methods
-        version: [latest] 
-
-    steps:
-"""
-
-    @staticmethod
-    def _common_checkout_step() -> str:
-        return """    - uses: actions/checkout@v4
-
-"""
-
-    @staticmethod
-    def _generate_python(meta: Dict) -> str:
-        test_cmd = meta.get("test_command", "pytest")
-        lint_step = ""
-        if meta.get("has_linter"):
-            lint_step = """    - name: Lint with flake8
-      run: |
-        pip install flake8
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings.
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-"""
-
-        yaml_content = WorkflowBuilder._yaml_header("Python CI")
-        yaml_content += WorkflowBuilder._common_checkout_step()
-        yaml_content += """    - name: Set up Python ${{ matrix.version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.version }}
-        cache: 'pip'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt;
-        elif [ -f setup.py ]; then pip install .;
-        fi
-
-"""
-        yaml_content += lint_step
-        yaml_content += f"""    - name: Run Tests
-      run: |
-        {test_cmd}
-"""
-        return yaml_content
-
-    @staticmethod
-    def _generate_node(meta: Dict) -> str:
-        yaml_content = WorkflowBuilder._yaml_header("Node.js CI")
-        yaml_content += WorkflowBuilder._common_checkout_step()
-        yaml_content += """    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-
-    - name: Install dependencies
-      run: npm ci
-
-"""
-        
-        if meta.get("has_linter"):
-             yaml_content += """    - name: Run Linter
-      run: npm run lint
-
-"""
-
-        yaml_content += """    - name: Run Tests
-      run: npm test
-"""
-        return yaml_content
-
-    @staticmethod
-    def _generate_go(meta: Dict) -> str:
-        yaml_content = WorkflowBuilder._yaml_header("Go CI")
-        yaml_content += WorkflowBuilder._common_checkout_step()
-        yaml_content += """    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: 'stable'
-        cache: true
-
-    - name: Build
-      run: go build -v ./...
-
-    - name: Test
-      run: go test -v ./...
-"""
-        return yaml_content
-
-    @staticmethod
-    def _generate_rust(meta: Dict) -> str:
-        yaml_content = WorkflowBuilder._yaml_header("Rust CI")
-        yaml_content += WorkflowBuilder._common_checkout_step()
-        yaml_content += """    - name: Set up Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-
-    - name: Build
-      run: cargo build --verbose
-
-    - name: Run Tests
-      run: cargo test --verbose
-"""
-        return yaml_content
-
-    @staticmethod
-    def _generate_java(meta: Dict) -> str:
-        yaml_content = WorkflowBuilder._yaml_header("Java CI")
-        yaml_content += WorkflowBuilder._common_checkout_step()
-        yaml_content += """    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: maven
-
-    - name: Build with Maven
-      run: mvn --batch-mode --update-snapshots package
-"""
-        return yaml_content
-
-    @staticmethod
-    def _generate_generic_shell() -> str:
-        yaml_content = WorkflowBuilder._yaml_header("Generic CI")
-        yaml_content += WorkflowBuilder._common_checkout_step()
-        yaml_content += """    - name: Run a generic test
-      run: |
-        echo "Language could not be detected."
-        echo "Add your own test commands here."
-        exit 1
-"""
-        return yaml_content
-
-
-class FileSystemOperator:
-    """Handles the actual writing of files to disk."""
-
-    def __init__(self, base_path: Union[str, Path]):
-        self.base_path = Path(base_path)
-
-    def write_workflow(self, content: str) -> Path:
-        """
-        Validates the path and writes the workflow YAML.
-        Returns the absolute path to the created file.
-        """
-        if not self.base_path.exists():
-            # If URL was passed, we might be treating current dir as target, 
-            # or user messed up. Let's cwd if base_path is effectively empty/invalid.
-            # For this CLI, if local path provided doesn't exist, Error.
-            raise WorkflowGeneratorError(f"Target directory does not exist: {self.base_path}")
-
-        workflow_dir = self.base_path / DEFAULT_WORKFLOW_DIR
-        workflow_file = workflow_dir / WORKFLOW_FILENAME
-
-        try:
-            workflow_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Check for overwrite
-            if workflow_file.exists():
-                print(f"[!] Warning: {WORKFLOW_FILENAME} already exists. Overwriting.")
-
-            with open(workflow_file, "w", encoding="utf-8") as f:
-                f.write(content)
-
-            print(f"[+] Successfully wrote workflow to: {workflow_file.absolute()}")
-            return workflow_file
-            
-        except OSError as e:
-            raise WorkflowGeneratorError(f"Failed to write workflow file: {e}")
-
+            response = requests.get(api_endpoint, headers=headers, timeout=5)
+            return response.status_code == 200
+        except requests.RequestException:
+            # If API fails, we assume it might be valid but network is down, 
+            # or we fall back to cloning later.
+            return True
+    else:
+        return True # No requests lib, assume valid to proceed to git clone
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Auto-generate GitHub Actions CI workflows from heuristic analysis.",
-        epilog="Built by Stormchaser.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="Auto-generate GitHub Actions CI workflow.",
+        epilog="Designed by Pixel Paladin."
     )
     parser.add_argument(
         "target",
-        help="Local path to repository OR GitHub URL"
+        help="Path to local repository or URL to remote git repository"
     )
-    parser.add_argument(
-        "--token",
-        help="GitHub Personal Access Token (env: GITHUB_TOKEN)",
-        default=None,
-        nargs="?"
-    )
-
+    
     args = parser.parse_args()
-
-    # Token handling: Prefer CLI arg, then Env Var
-    github_token = args.token or os.environ.get("GITHUB_TOKEN")
+    target = args.target
+    repo_path: Path
+    cleanup_temp = False
 
     try:
-        # 1. Inspect
-        inspector = RepoInspector(args.target, github_token)
-        metadata = inspector.scan()
-
-        # 2. Generate
-        print("[*] Generating workflow configuration...")
-        yaml_content = WorkflowBuilder.generate(metadata)
-
-        # 3. Write
-        # Determine base path:
-        # If remote, assume we want to write to current directory (common CLI pattern for fetchers)
-        # If local, write to that directory.
-        if inspector.is_remote:
-            base_path = Path.cwd()
-            print(f"[*] Remote target detected. Writing workflow to current directory: {base_path}")
+        # Determine if target is URL or Path
+        if target.startswith(("http://", "https://", "git@")):
+            print(f"Pixel Paladin: Target detected as URL.")
+            if not check_remote_repo_validity(target):
+                print("Warning: Could not verify repository via API, attempting clone anyway.")
+            
+            temp_dir = tempfile.mkdtemp(prefix="paladin_ci_")
+            repo_path = clone_repo(target, Path(temp_dir))
+            cleanup_temp = True
         else:
-            base_path = args.target
+            print("Pixel Paladin: Target detected as local path.")
+            repo_path = Path(target).absolute()
+            if not repo_path.exists():
+                raise RepositoryNotFoundError(f"Path does not exist: {repo_path}")
+            if not (repo_path / ".git").exists():
+                print("Warning: Target does not appear to be a git repository.")
 
-        fs_op = FileSystemOperator(base_path)
-        output_path = fs_op.write_workflow(yaml_content)
+        # Detect Language
+        print(f"Pixel Paladin: Scanning {repo_path.name} for language markers...")
+        languages = detect_languages(repo_path)
+        
+        if not languages:
+            raise LanguageDetectionError("No supported languages detected. "
+                                        "Supported: Python, Node.js, Go, Rust, Java.")
 
-        print("\n=== Summary ===")
-        print(f"Workflow created: {output_path}")
-        print("Next steps:")
-        print("1. Review the generated YAML.")
-        print("2. Commit and push to GitHub.")
-        print("3. Watch the Actions tab.")
+        primary_language = languages[0]
+        if len(languages) > 1:
+            print(f"Pixel Paladin: Detected multiple languages: {', '.join(languages)}")
+            print(f"Pixel Paladin: Prioritizing '{primary_language}' for CI generation.")
+        else:
+            print(f"Pixel Paladin: Detected language: {primary_language}")
 
-    except RepoInspectionError as e:
-        print(f"[Error] Inspection failed: {e}", file=sys.stderr)
-        sys.exit(1)
-    except WorkflowGeneratorError as e:
-        print(f"[Error] Generation failed: {e}", file=sys.stderr)
+        # Infer Commands
+        install_cmd, test_cmd, lint_cmd = infer_commands(repo_path, primary_language)
+        print(f"Pixel Paladin: Inferred commands -> Install: '{install_cmd}', Test: '{test_cmd}', Lint: '{lint_cmd or 'None'}'")
+
+        # Generate YAML
+        print("Pixel Paladin: Constructing CI workflow YAML...")
+        yml_content = generate_workflow_yml(primary_language, install_cmd, test_cmd, lint_cmd)
+
+        # Write File
+        work_dir = repo_path / ".github" / "workflows"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        output_file = work_dir / "ci.yml"
+        
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(yml_content)
+        
+        print("-" * 50)
+        print(f"SUCCESS: CI workflow generated at {output_file}")
+        print("-" * 50)
+        print("Content Preview:")
+        print("-" * 50)
+        print(yml_content)
+        print("-" * 50)
+
+    except PaladinsError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"[Error] Unexpected failure: {e}", file=sys.stderr)
+        print(f"Unexpected Error: {e}", file=sys.stderr)
         sys.exit(1)
-
+    finally:
+        if cleanup_temp:
+            print("Pixel Paladin: Cleaning up temporary artifacts...")
+            shutil.rmtree(repo_path, ignore_errors=True)
 
 if __name__ == "__main__":
     main()
